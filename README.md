@@ -2,7 +2,7 @@
 An image gallery component for Next.js, powered by Supabase for database and Google Cloud Platform for storage.
 
 ## Preview
-<img width="1919" height="825" alt="image" src="https://github.com/user-attachments/assets/7ecc959b-1826-4c75-ad03-ee4bec44daea" />
+<img width="1919" height="825" alt="image" src="https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e" />
 
 ## Why I Made This
 I built this project to create a beautiful way to showcase my favorite images, from digital art to memorable screenshots. 
