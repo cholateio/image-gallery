@@ -1,41 +1,29 @@
 'use client';
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { motion } from 'framer-motion';
 import Image from 'next/image';
-import { supabase } from '@/lib/supabaseClient';
 import { Search, ChevronsUp, RotateCw, ChevronRight, ChevronLeft, X } from 'lucide-react';
 
-// Hook for Debouncing - delay an action until the user has stopped typing for a specific amount of time
-const useDebounce = (value, delay) => {
-    const [debouncedValue, setDebouncedValue] = useState(value);
-    useEffect(() => {
-        // Set up a timer to update the debounced value after the specified delay
-        const handler = setTimeout(() => setDebouncedValue(value), delay);
-        // Clean up the previous timer if the value changes before the delay has passed
-        return () => clearTimeout(handler);
-    }, [value, delay]);
-    return debouncedValue;
-};
+const BLUR_PIXEL =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const DEFAULT_ENTRANCE = { delay: 0.8, duration: 0.4, ease: 'easeIn' };
+const EMPTY = {};
 
-// Hooks for columns and mobile detection
 const useLayoutConfig = () => {
     const [config, setConfig] = useState({ columns: 2, isMobile: false });
 
     useEffect(() => {
         const updateConfig = () => {
             const width = window.innerWidth;
-            let cols = 2;
-            if (width >= 1280) cols = 7;
-            else if (width >= 1024) cols = 5;
-            else if (width >= 768) cols = 4;
-
-            setConfig({
-                columns: cols,
-                isMobile: width < 768,
-            });
+            let columns = 2;
+            if (width >= 1280) columns = 7;
+            else if (width >= 1024) columns = 5;
+            else if (width >= 768) columns = 4;
+            const isMobile = width < 768;
+            setConfig((prev) => (prev.columns === columns && prev.isMobile === isMobile ? prev : { columns, isMobile }));
         };
 
-        updateConfig(); // Initial check
+        updateConfig();
         window.addEventListener('resize', updateConfig);
         return () => window.removeEventListener('resize', updateConfig);
     }, []);
@@ -43,171 +31,232 @@ const useLayoutConfig = () => {
     return config;
 };
 
-const GalleryClient = () => {
-    // State
-    const [images, setImages] = useState([]); // An array to store all the image objects fetched from Supabase
-    const [page, setPage] = useState(1); // A number to keep track of which page of results to fetch for infinite scrolling
-    const [loading, setLoading] = useState(false);
+const GalleryItem = memo(function GalleryItem({ image, index, unoptimized, onSelect }) {
+    return (
+        <div
+            className="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl cursor-pointer group"
+            onClick={() => onSelect(index)}
+        >
+            <Image
+                src={image.url}
+                alt={image.title}
+                width={image.width ?? 1}
+                height={image.height ?? 1}
+                className="w-full h-auto object-cover transition-transform duration-300 group-hover:scale-105"
+                sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 25vw"
+                placeholder="blur"
+                blurDataURL={BLUR_PIXEL}
+                unoptimized={unoptimized}
+            />
+        </div>
+    );
+});
+
+const MasonryGrid = memo(function MasonryGrid({ columns, unoptimized, onSelect }) {
+    return (
+        <div className="flex gap-4 items-start">
+            {columns.map((items, colIndex) => (
+                <div key={colIndex} className="flex flex-col gap-4 flex-1">
+                    {items.map(({ image, index }) => (
+                        <GalleryItem key={image.id} image={image} index={index} unoptimized={unoptimized} onSelect={onSelect} />
+                    ))}
+                </div>
+            ))}
+        </div>
+    );
+});
+
+const formatRow = (row) => ({
+    id: row.id,
+    url: row.gcs_url,
+    title: row.tags?.[0] ?? 'Untitled',
+    source: row.source || 'Unknown',
+    date: new Date(row.created_at).toLocaleDateString(),
+    tags: row.tags || [],
+    width: row.width,
+    height: row.height,
+    sortKey: row.sort_key,
+});
+
+const newSeed = () => Math.random().toString(36).slice(2);
+
+const GalleryClient = ({
+    supabase,
+    rpc = 'get_random_media',
+    pageSize = 14,
+    title = 'My Image Gallery',
+    unoptimizedThumbnails = true,
+    entrance = DEFAULT_ENTRANCE,
+    motionProps = EMPTY,
+    className = 'min-h-[100vh] p-4 sm:p-6 lg:p-8',
+}) => {
+    const [images, setImages] = useState([]);
+    const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'error'
+    const [hasMore, setHasMore] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
-    const [hasMore, setHasMore] = useState(true); // A boolean to know if there are more images to load from the database
-    const [selectedImage, setSelectedImage] = useState(null); // Stores the image object that the user clicks on to open in the full-screen modal
+    const [activeTerm, setActiveTerm] = useState('');
+    const [selectedIndex, setSelectedIndex] = useState(null);
     const [rotation, setRotation] = useState(0);
     const [showScrollTopButton, setShowScrollTopButton] = useState(false);
 
-    // Hooks & Refs
     const { columns: numColumns, isMobile } = useLayoutConfig();
-    const debouncedSearchTerm = useDebounce(searchTerm, 500); // Wait 500ms after user stops typing
-    const observerTarget = useRef(null); // 用於無限捲動的錨點
-    const isFirstRender = useRef(true);
+    const observerTarget = useRef(null);
+    const prevTerm = useRef(null);
     const touchStartX = useRef(0);
     const touchEndX = useRef(0);
 
-    const PAGE_LIMIT = 14; // A constant defining how many images to fetch per request
+    // One search = one seed + keyset cursor. requestId changes on every new search so a
+    // late response from an earlier search is dropped; pending holds the requestId whose
+    // request is in flight so a second trigger in the same tick does not double-fetch.
+    const cursor = useRef({ seed: '', term: '', afterKey: null, afterId: null, requestId: 0 });
+    const pending = useRef(null);
 
-    // Heart of data fetching logic, useCallback to prevent it from being recreated on every component render
-    const loadImages = useCallback(async (currentPage, term) => {
-        setLoading(true);
-        const isNewSearch = currentPage === 1;
+    const fetchPage = useCallback(async () => {
+        const { seed, term, afterKey, afterId, requestId: myId } = cursor.current;
+        if (pending.current === myId) return;
+        pending.current = myId;
+        setStatus('loading');
 
-        try {
-            // 使用 Supabase RPC 呼叫資料庫端的隨機排序函數
-            const { data, error } = await supabase.rpc('get_random_media', {
-                p_search_term: term.trim().toLowerCase(),
-                p_limit: PAGE_LIMIT,
-                p_offset: (currentPage - 1) * PAGE_LIMIT,
-            });
+        const { data, error } = await supabase.rpc(rpc, {
+            p_seed: seed,
+            p_search_term: term,
+            p_limit: pageSize,
+            p_after_key: afterKey,
+            p_after_id: afterId,
+        });
 
-            if (error) throw error;
+        if (pending.current === myId) pending.current = null;
+        if (myId !== cursor.current.requestId) return;
 
-            const formattedImages = data.map((img) => ({
-                id: img.id,
-                url: img.gcs_url,
-                title: img.tags ? img.tags[0] : 'Untitled',
-                source: img.source || 'Unknown',
-                date: new Date(img.created_at).toLocaleDateString(),
-                tags: img.tags || [],
-                width: img.width,
-                height: img.height,
-            }));
-
-            setImages((prev) => {
-                if (isNewSearch) return formattedImages;
-
-                // 關鍵優化：過濾重複 ID，因為 DB 的 random() 在分頁時不保證唯一性，前端必須再次過濾
-                const existingIds = new Set(prev.map((img) => img.id));
-                const uniqueNewImages = formattedImages.filter((img) => !existingIds.has(img.id));
-                return [...prev, ...uniqueNewImages];
-            });
-
-            // 如果回傳數量少於請求數量，代表沒資料了
-            setHasMore(formattedImages.length === PAGE_LIMIT);
-
-            // 只有在成功載入後才增加頁數 (由 Effect 控制或在此控制皆可，這裡選擇讓 Effect 不依賴 page 增加)
-            if (formattedImages.length > 0) setPage(currentPage + 1);
-        } catch (error) {
+        if (error) {
             console.error('Error fetching images:', error);
-            setHasMore(false);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    // Search effect now depends on the debounced term
-    useEffect(() => {
-        if (isFirstRender.current) {
-            isFirstRender.current = false;
-            loadImages(1, debouncedSearchTerm);
+            setStatus('error');
             return;
         }
-        // This effect now triggers only after the user has paused typing
-        setPage(1);
-        setHasMore(true);
-        loadImages(1, debouncedSearchTerm);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [debouncedSearchTerm, loadImages]);
 
-    // Infinite scroll effect (使用 Intersection Observer 取代 scroll event)
+        const rows = data.map(formatRow);
+        setImages((prev) => (afterKey === null ? rows : [...prev, ...rows]));
+        if (rows.length > 0) {
+            const last = rows[rows.length - 1];
+            cursor.current.afterKey = last.sortKey;
+            cursor.current.afterId = last.id;
+        }
+        setHasMore(rows.length === pageSize);
+        setStatus('idle');
+    }, [supabase, rpc, pageSize]);
+
+    // The first page of a search replaces the list when it arrives (fetchPage), so nothing
+    // is cleared here and the old images stay visible while the new ones load.
+    const startSearch = useCallback(
+        (term) => {
+            cursor.current = {
+                seed: newSeed(),
+                term,
+                afterKey: null,
+                afterId: null,
+                requestId: cursor.current.requestId + 1,
+            };
+            setActiveTerm(term);
+            setHasMore(true);
+            fetchPage();
+        },
+        [fetchPage]
+    );
+
+    // Debounce: the search starts 500 ms after typing stops, immediately on mount.
     useEffect(() => {
+        const term = searchTerm.trim().toLowerCase();
+        const first = prevTerm.current === null;
+        const handle = setTimeout(
+            () => {
+                if (!first && prevTerm.current !== term) window.scrollTo({ top: 0, behavior: 'smooth' });
+                prevTerm.current = term;
+                startSearch(term);
+            },
+            first ? 0 : 500
+        );
+        return () => clearTimeout(handle);
+    }, [searchTerm, startSearch]);
+
+    useEffect(() => {
+        const target = observerTarget.current;
+        if (!target) return undefined;
         const observer = new IntersectionObserver(
             (entries) => {
-                if (entries[0].isIntersecting && hasMore && !loading && page > 1) {
-                    loadImages(page, debouncedSearchTerm);
-                }
+                if (entries[0].isIntersecting && hasMore && status === 'idle') fetchPage();
             },
-            { threshold: 1.0, rootMargin: '200px' } // 提早 200px 觸發
+            { threshold: 1.0, rootMargin: '200px' }
         );
+        observer.observe(target);
+        return () => observer.disconnect();
+    }, [hasMore, status, fetchPage]);
 
-        if (observerTarget.current) {
-            observer.observe(observerTarget.current);
-        }
-
-        return () => {
-            if (observerTarget.current) observer.disconnect();
-        };
-    }, [hasMore, loading, page, debouncedSearchTerm, loadImages]);
-
-    // 顯示回到頂部按鈕 (這個還是需要 scroll 監聽，但頻率低且邏輯簡單)
     useEffect(() => {
         const handleScroll = () => setShowScrollTopButton(window.pageYOffset > 500);
         window.addEventListener('scroll', handleScroll, { passive: true });
         return () => window.removeEventListener('scroll', handleScroll);
     }, []);
 
-    // When the modal is open, it sets overflow: 'hidden' on the <body> element to prevent the background from scrolling
+    const selectedImage = selectedIndex === null ? null : images[selectedIndex];
+
     useEffect(() => {
-        document.body.style.overflow = selectedImage ? 'hidden' : 'auto';
+        if (!selectedImage) return undefined;
+        const previous = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
         return () => {
-            document.body.style.overflow = 'auto';
+            document.body.style.overflow = previous;
         };
     }, [selectedImage]);
 
-    // This hook efficiently organizes the flat images array into a nested array of columns for your masonry layout
+    // Shortest-column placement keyed on aspect ratio: equal-width columns make a column's
+    // height proportional to the sum of height/width. Deterministic, so appending a page
+    // never moves earlier images.
     const columns = useMemo(() => {
-        const newColumns = Array.from({ length: numColumns }, () => []);
+        const cols = Array.from({ length: numColumns }, () => ({ items: [], height: 0 }));
         images.forEach((image, index) => {
-            newColumns[index % numColumns].push(image);
+            let target = cols[0];
+            for (let i = 1; i < cols.length; i += 1) if (cols[i].height < target.height) target = cols[i];
+            target.items.push({ image, index });
+            target.height += (image.height || 1) / (image.width || 1);
         });
-        return newColumns;
+        return cols.map((c) => c.items);
     }, [images, numColumns]);
 
-    // Functions for user interaction, primarily related to the image modal
-    const handleCloseModal = () => {
-        setSelectedImage(null);
+    const openImage = useCallback((index) => {
+        setSelectedIndex(index);
         setRotation(0);
-    };
-    const handleTagClick = (tag) => {
-        setSearchTerm(tag); // The debounce hook will handle the rest
-        handleCloseModal();
-    };
-
-    // Functions for going to next or prev image in modal
-    const currentImageIndex = selectedImage ? images.findIndex((img) => img.id === selectedImage.id) : -1;
-
+    }, []);
+    const closeModal = useCallback(() => {
+        setSelectedIndex(null);
+        setRotation(0);
+    }, []);
     const navigateImage = useCallback(
         (direction) => {
-            const newIndex = currentImageIndex + direction;
-            if (newIndex >= 0 && newIndex < images.length) {
-                setSelectedImage(images[newIndex]);
-                setRotation(0);
-            }
+            setSelectedIndex((current) => {
+                if (current === null) return current;
+                const next = current + direction;
+                return next >= 0 && next < images.length ? next : current;
+            });
+            setRotation(0);
         },
-        [currentImageIndex, images]
+        [images.length]
     );
+    const handleTagClick = (tag) => {
+        setSearchTerm(tag);
+        closeModal();
+    };
 
-    // Keyboard support
     useEffect(() => {
-        if (!selectedImage) return;
+        if (!selectedImage) return undefined;
         const handleKeyDown = (e) => {
             if (e.key === 'ArrowRight') navigateImage(1);
             if (e.key === 'ArrowLeft') navigateImage(-1);
-            if (e.key === 'Escape') handleCloseModal();
+            if (e.key === 'Escape') closeModal();
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedImage, navigateImage]);
+    }, [selectedImage, navigateImage, closeModal]);
 
-    // Touch Swipe Support
     const handleTouchStart = (e) => {
         touchEndX.current = 0;
         touchStartX.current = e.targetTouches[0].clientX;
@@ -215,19 +264,19 @@ const GalleryClient = () => {
     const handleTouchEnd = () => {
         if (!touchEndX.current) return;
         const deltaX = touchEndX.current - touchStartX.current;
-        if (deltaX > 50) navigateImage(-1); // Swipe Right -> Prev
-        if (deltaX < -50) navigateImage(1); // Swipe Left -> Next
+        if (deltaX > 50) navigateImage(-1);
+        if (deltaX < -50) navigateImage(1);
     };
 
     return (
         <motion.div
+            {...motionProps}
             initial={{ opacity: 0 }}
-            animate={{ opacity: 1, transition: { delay: 0.8, duration: 0.4, ease: 'easeIn' } }}
-            className="min-h-[100vh] p-4 sm:p-6 lg:p-8"
+            animate={{ opacity: 1, transition: entrance }}
+            className={className}
         >
             <div className="mx-auto">
-                <h1 className="text-3xl font-bold text-center mb-6">My Image Gallery</h1>
-                {/* Search Bar */}
+                {title ? <h1 className="text-3xl font-bold text-center mb-6">{title}</h1> : null}
                 <div className="mb-8 relative max-w-2xl mx-auto">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
@@ -248,73 +297,55 @@ const GalleryClient = () => {
                     )}
                 </div>
 
-                {/* Masonry Grid */}
-                <div className="flex gap-4 items-start">
-                    {columns.map((columnImages, colIndex) => (
-                        <div key={colIndex} className="flex flex-col gap-4 flex-1">
-                            {columnImages.map((image, idx) => (
-                                <motion.div
-                                    key={image.id}
-                                    layoutId={`img-${image.id}`}
-                                    className="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl cursor-pointer group"
-                                    onClick={() => setSelectedImage(image)}
-                                >
-                                    <Image
-                                        src={image.url}
-                                        alt={image.title}
-                                        width={image.width}
-                                        height={image.height}
-                                        className="w-full h-auto object-cover transition-transform duration-300 group-hover:scale-105"
-                                        sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 25vw"
-                                        placeholder="blur"
-                                        blurDataURL="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" // 簡單的佔位符
-                                        unoptimized={true}
-                                    />
-                                </motion.div>
-                            ))}
-                        </div>
-                    ))}
-                </div>
+                <MasonryGrid columns={columns} unoptimized={unoptimizedThumbnails} onSelect={openImage} />
 
-                {/* Status & Sentinel */}
                 <div className="py-8 text-center text-gray-500">
-                    {!loading && images.length === 0 && (
-                        <p>{debouncedSearchTerm ? `No results for "${debouncedSearchTerm}"` : 'Gallery is empty.'}</p>
+                    {status === 'idle' && images.length === 0 && (
+                        <p>{activeTerm ? `No results for "${activeTerm}"` : 'Gallery is empty.'}</p>
                     )}
 
-                    {/* 這是 Intersection Observer 的觸發點 */}
                     <div ref={observerTarget} className="h-4 w-full" />
 
-                    {loading && <p>Loading more...</p>}
-                    {!hasMore && images.length > 0 && <p>End of gallery</p>}
+                    {status === 'loading' && <p>Loading more...</p>}
+                    {status === 'error' && (
+                        <p>
+                            Loading failed.{' '}
+                            <button onClick={fetchPage} className="underline hover:text-gray-700">
+                                Retry
+                            </button>
+                        </p>
+                    )}
+                    {status === 'idle' && !hasMore && images.length > 0 && <p>End of gallery</p>}
                 </div>
             </div>
 
             {selectedImage && (
                 <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 transition-opacity duration-300"
-                    onClick={handleCloseModal}
+                    onClick={closeModal}
                 >
                     {!isMobile && (
                         <>
-                            {currentImageIndex > 0 && (
+                            {selectedIndex > 0 && (
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         navigateImage(-1);
                                     }}
                                     className="absolute left-8 text-white/70 hover:text-white p-2 hover:bg-white/10 rounded-full transition"
+                                    aria-label="Previous image"
                                 >
                                     <ChevronLeft size={48} />
                                 </button>
                             )}
-                            {currentImageIndex < images.length - 1 && (
+                            {selectedIndex < images.length - 1 && (
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         navigateImage(1);
                                     }}
                                     className="absolute right-8 text-white/70 hover:text-white p-2 hover:bg-white/10 rounded-full transition"
+                                    aria-label="Next image"
                                 >
                                     <ChevronRight size={48} />
                                 </button>
@@ -329,12 +360,12 @@ const GalleryClient = () => {
                         onTouchMove={(e) => (touchEndX.current = e.targetTouches[0].clientX)}
                         onTouchEnd={handleTouchEnd}
                     >
-                        <div className="relative max-w-[90vw] max-h-[80vh] w-auto h-auto aspect-w-1 aspect-h-1">
+                        <div className="relative max-w-[90vw] max-h-[80vh] w-auto h-auto">
                             <Image
                                 src={selectedImage.url}
                                 alt={selectedImage.title}
-                                width={selectedImage.width} // Use the direct width
-                                height={selectedImage.height} // Use the direct height
+                                width={selectedImage.width ?? 1}
+                                height={selectedImage.height ?? 1}
                                 className="object-contain rounded-lg shadow-2xl transition-transform duration-300 ease-in-out pointer-events-none max-w-[90vw] max-h-[80vh] h-auto sm:w-auto"
                                 style={{ transform: `rotate(${rotation}deg)` }}
                                 sizes="90vw"
@@ -374,11 +405,11 @@ const GalleryClient = () => {
                     </div>
                 </div>
             )}
-            {/* Scroll Top Button */}
             {showScrollTopButton && (
                 <button
                     onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
                     className="fixed bottom-8 right-8 bg-blue-600 text-white p-3 rounded-full shadow-xl hover:scale-110 transition z-40"
+                    aria-label="Scroll to top"
                 >
                     <ChevronsUp size={24} />
                 </button>
