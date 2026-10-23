@@ -1,34 +1,34 @@
 # Image Gallery
 
-**English** | [繁體中文](README.zh-TW.md)
+**繁體中文** | [English](README.en.md)
 
-A masonry gallery page for your own picture collection, with tag search and a full-screen viewer. Add the component to a Next.js app, put image links and tags in Supabase, and you get an endless wall of pictures in random order.
+替你自己的圖片收藏做一個瀑布流相簿頁，可以用標籤搜尋，也有全螢幕檢視器。把元件加進 Next.js app，把圖片連結和標籤放進 Supabase，就有一面以隨機順序無限延伸的圖片牆。
 
-![Gallery page with a search box on top and a multi-column masonry grid of illustrations](https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e)
+![相簿頁：上方是搜尋框，下方是多欄瀑布流排列的插畫](https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e)
 
-- **Masonry grid**: 2 columns on phones and up to 7 on wide screens, picked from the window width.
-- **Endless scroll**: 14 more images load as you near the bottom, in random order.
-- **Tag search**: type a tag in the search box; the query runs 500 ms after you stop typing, and tags must be lowercase.
-- **Full-screen viewer**: click an image to see it large, rotate it, jump to its tags, and move with arrow keys or swipes.
+- **瀑布流排版**：依視窗寬度決定欄數，手機 2 欄，寬螢幕最多 7 欄。
+- **無限捲動**：快捲到底時再載入 14 張，順序隨機。
+- **標籤搜尋**：在搜尋框輸入標籤，停止輸入 500 毫秒後才送出查詢；標籤必須是小寫。
+- **全螢幕檢視器**：點圖片就能看大圖、旋轉、跳到它的標籤，也能用方向鍵或滑動切換。
 
-## How it works
+## 它怎麼運作
 
 ```
-Browser (client.jsx) ──► Supabase RPC get_random_media ──► "Gallery" table (image URL + tags)
-Browser ──► image URL (any host, e.g. a cloud storage bucket) ──► picture
+瀏覽器 (client.jsx) ──► Supabase RPC get_random_media ──► "Gallery" 資料表 (圖片網址 + 標籤)
+瀏覽器 ──► 圖片網址 (任何主機，例如雲端儲存 bucket) ──► 圖片
 ```
 
-The images themselves are not stored in Supabase; the table holds only a link, size and tags for each one.
+圖片本身不存在 Supabase；資料表裡每張圖只存一個連結、尺寸和標籤。
 
-## Install
+## 安裝
 
-Needs a Next.js app with Tailwind CSS, and a Supabase project. The images must already be hosted somewhere with a public URL.
+需要：一個裝了 Tailwind CSS 的 Next.js app，以及一個 Supabase 專案。圖片必須已經放在某個有公開網址的地方。
 
-1. Install the dependencies: `npm install @supabase/supabase-js framer-motion lucide-react`
-2. Copy `client.jsx` into your app and render it from a page, for example `import GalleryClient from './client'`.
-3. Create `lib/supabaseClient.js` exporting a `supabase` client, since the component imports `@/lib/supabaseClient`. Put `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`.
-4. In `next.config.js`, allow the host of your image URLs under `images.remotePatterns`, because the full-screen viewer uses Next.js image optimization.
-5. In Supabase, open **SQL Editor** and create the table. Put the image link in `gcs_url` and lowercase tags in `tags`, for example `{ln,miku}`.
+1. 安裝相依套件：`npm install @supabase/supabase-js framer-motion lucide-react`
+2. 把 `client.jsx` 複製進你的 app，在某個頁面渲染它，例如 `import GalleryClient from './client'`。
+3. 建立 `lib/supabaseClient.js` 並匯出一個 `supabase` client，因為元件會 import `@/lib/supabaseClient`。把 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 放進 `.env.local`。
+4. 在 `next.config.js` 的 `images.remotePatterns` 允許你圖片網址的主機，因為全螢幕檢視器用的是 Next.js 的圖片最佳化。
+5. 在 Supabase 打開 **SQL Editor** 建立資料表。圖片連結放在 `gcs_url`，小寫標籤放在 `tags`，例如 `{ln,miku}`。
 
 ```sql
 CREATE TABLE public."Gallery" (
@@ -42,7 +42,7 @@ CREATE TABLE public."Gallery" (
 );
 ```
 
-6. Run the second block to create the random-order search function:
+6. 執行第二段，建立隨機排序的搜尋函式：
 
 ```sql
 CREATE OR REPLACE FUNCTION get_random_media(
@@ -84,10 +84,10 @@ $$;
 GRANT EXECUTE ON FUNCTION get_random_media(text, int, int) TO anon, authenticated;
 ```
 
-## Privacy & security
+## 隱私與安全
 
-The browser sends search terms to your Supabase project and loads pictures straight from wherever their URLs point. Nothing goes to any other service. The function runs as `SECURITY DEFINER` and is open to the public anon key, so anyone who has the key can list every row in `Gallery`. Keep only images you are happy to expose.
+瀏覽器會把搜尋字詞送到你的 Supabase 專案，並直接從圖片網址指向的地方載入圖片，不會送到其他任何服務。這個函式以 `SECURITY DEFINER` 執行，而且開放給公開的 anon key 呼叫，所以任何拿到這把 key 的人都能列出 `Gallery` 的每一筆資料。只放你願意公開的圖片。
 
-## License
+## 授權
 
 [MIT](LICENSE)
