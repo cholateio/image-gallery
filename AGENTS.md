@@ -8,16 +8,17 @@ A single drop-in React component for a Next.js app: a masonry gallery with endle
 ## Stack
 
 - Language / framework: JavaScript (JSX) client component for Next.js + Tailwind CSS; `framer-motion`, `lucide-react`, `next/image`
-- Services: Supabase (`Gallery` table + `get_random_media` RPC), reached directly from the browser through the host app's `@/lib/supabaseClient`; images hosted anywhere with a public URL
+- Services: Supabase (`Gallery` table + `get_random_media` RPC with a required `p_seed` and a keyset cursor), reached directly from the browser through the supabase-js client the host passes in as the `supabase` prop; images hosted anywhere with a public URL
 - Test: none (no package.json or test suite in this repo); verify by dropping `client.jsx` into a Next.js app as the README's Install section describes
 
 ## File layout
 
 - `client.jsx` — the whole component (masonry grid, infinite loading, debounced tag search, viewer)
+- `docs/superpowers/specs/` — design decisions behind the current component; `docs/superpowers/plans/` — the plan that implemented them
 
 ## Constraints
 
-- The component stays a single self-contained file that a user can copy into their app; it only imports `@/lib/supabaseClient` and the listed packages.
+- The component stays a single self-contained file that a user can copy into their app; it imports only `react`, `framer-motion`, `next/image` and `lucide-react`. The host passes its supabase-js client in through the `supabase` prop; no `@/...` alias imports.
 - No server code and no keys in this repo; the host app provides the Supabase client, env vars and `images.remotePatterns`.
 - Path-type constraints are mirrored in `kit.toml [protected]`; keep the two in sync (one glob per line).
 
@@ -30,4 +31,4 @@ A single drop-in React component for a Next.js app: a masonry gallery with endle
 
 ## Where to look
 
-- `README.md` — install steps, the table and RPC SQL
+- `README.md` — install steps, the props table, the table and RPC SQL
