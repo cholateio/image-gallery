@@ -41,7 +41,7 @@ export default function GalleryPage() {
 
 3. 把 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 放進 `.env.local`。
 4. 在 `next.config.js` 的 `images.remotePatterns` 允許你圖片網址的主機，因為全螢幕檢視器用的是 Next.js 的圖片最佳化。
-5. 在 Supabase 打開 **SQL Editor** 建立資料表。圖片連結放在 `gcs_url`，小寫標籤放在 `tags`，例如 `{ln,miku}`。
+5. 在 Supabase 打開 **SQL Editor** 建立資料表。圖片連結放在 `gcs_url`，小寫標籤放在 `tags`，例如 `{ln,miku}`。如果你已經有一張欄位相同但名稱不同的表，跳過這一步，並把第 6 步 SQL 裡兩處 `public."Gallery"` 換成你的表名（例如 `public.my_gallery`）；函式內容是純文字，表改名時不會跟著變，要等有人打開相簿才會報錯。
 
 ```sql
 CREATE TABLE public."Gallery" (

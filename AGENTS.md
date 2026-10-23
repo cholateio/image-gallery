@@ -14,7 +14,6 @@ A single drop-in React component for a Next.js app: a masonry gallery with endle
 ## File layout
 
 - `client.jsx` — the whole component (masonry grid, infinite loading, debounced tag search, viewer)
-- `docs/superpowers/specs/` — design decisions behind the current component; `docs/superpowers/plans/` — the plan that implemented them
 
 ## Constraints
 

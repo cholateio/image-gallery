@@ -41,7 +41,7 @@ export default function GalleryPage() {
 
 3. Put `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`.
 4. In `next.config.js`, allow the host of your image URLs under `images.remotePatterns`, because the full-screen viewer uses Next.js image optimization.
-5. In Supabase, open **SQL Editor** and create the table. Put the image link in `gcs_url` and lowercase tags in `tags`, for example `{ln,miku}`.
+5. In Supabase, open **SQL Editor** and create the table. Put the image link in `gcs_url` and lowercase tags in `tags`, for example `{ln,miku}`. If you already have a table with the same columns under another name, skip this step and replace both `public."Gallery"` occurrences in the step 6 SQL with your table name (for example `public.my_gallery`); the function body is plain text, so renaming the table later does not update it and the gallery fails only when someone opens it.
 
 ```sql
 CREATE TABLE public."Gallery" (
