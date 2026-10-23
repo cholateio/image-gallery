@@ -7,7 +7,7 @@
 ![相簿頁：上方是搜尋框，下方是多欄瀑布流排列的插畫](https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e)
 
 - **瀑布流排版**：依視窗寬度決定欄數，手機 2 欄，寬螢幕最多 7 欄。
-- **無限捲動**：快捲到底時再載入 14 張，順序隨機。
+- **無限捲動**：快捲到底時再載入 14 張，順序隨機；同一輪瀏覽裡每張圖只出現一次。
 - **標籤搜尋**：在搜尋框輸入標籤，停止輸入 500 毫秒後才送出查詢；標籤必須是小寫。
 - **全螢幕檢視器**：點圖片就能看大圖、旋轉、跳到它的標籤，也能用方向鍵或滑動切換。
 
@@ -25,8 +25,21 @@
 需要：一個裝了 Tailwind CSS 的 Next.js app，以及一個 Supabase 專案。圖片必須已經放在某個有公開網址的地方。
 
 1. 安裝相依套件：`npm install @supabase/supabase-js framer-motion lucide-react`
-2. 把 `client.jsx` 複製進你的 app，在某個頁面渲染它，例如 `import GalleryClient from './client'`。
-3. 建立 `lib/supabaseClient.js` 並匯出一個 `supabase` client，因為元件會 import `@/lib/supabaseClient`。把 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 放進 `.env.local`。
+2. 把 `client.jsx` 複製進你的 app，在一個 client 元件裡渲染它，並把你的 Supabase client 用 `supabase` prop 傳進去：
+
+```jsx
+'use client';
+import { createClient } from '@supabase/supabase-js';
+import GalleryClient from './client';
+
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+
+export default function GalleryPage() {
+    return <GalleryClient supabase={supabase} />;
+}
+```
+
+3. 把 `NEXT_PUBLIC_SUPABASE_URL` 和 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 放進 `.env.local`。
 4. 在 `next.config.js` 的 `images.remotePatterns` 允許你圖片網址的主機，因為全螢幕檢視器用的是 Next.js 的圖片最佳化。
 5. 在 Supabase 打開 **SQL Editor** 建立資料表。圖片連結放在 `gcs_url`，小寫標籤放在 `tags`，例如 `{ln,miku}`。
 
@@ -42,13 +55,17 @@ CREATE TABLE public."Gallery" (
 );
 ```
 
-6. 執行第二段，建立隨機排序的搜尋函式：
+6. 執行第二段，建立隨機排序的搜尋函式和標籤索引：
 
 ```sql
-CREATE OR REPLACE FUNCTION get_random_media(
+DROP FUNCTION IF EXISTS public.get_random_media(text, int, int);
+
+CREATE OR REPLACE FUNCTION public.get_random_media(
+  p_seed text,
   p_search_term text DEFAULT '',
   p_limit int DEFAULT 14,
-  p_offset int DEFAULT 0
+  p_after_key text DEFAULT NULL,
+  p_after_id bigint DEFAULT NULL
 )
 RETURNS TABLE (
   id bigint,
@@ -57,13 +74,14 @@ RETURNS TABLE (
   height int,
   source text,
   gcs_url text,
-  created_at timestamptz
+  created_at timestamptz,
+  sort_key text
 )
-LANGUAGE plpgsql
+LANGUAGE sql
+STABLE
 SECURITY DEFINER
+SET search_path = ''
 AS $$
-BEGIN
-  RETURN QUERY
   SELECT
     m.id,
     COALESCE(m.tags, '{}')::text[],
@@ -71,18 +89,42 @@ BEGIN
     m.height,
     m.source,
     m.gcs_url,
-    m.created_at
-  FROM "Gallery" m
-  WHERE
-    (p_search_term = '' OR m.tags @> ARRAY[p_search_term]::text[])
-  ORDER BY random()
-  LIMIT p_limit
-  OFFSET p_offset;
-END;
+    m.created_at,
+    md5(m.id::text || p_seed) AS sort_key
+  FROM public."Gallery" m
+  WHERE (p_search_term = '' OR m.tags @> ARRAY[p_search_term])
+    AND (p_after_key IS NULL OR (md5(m.id::text || p_seed), m.id) > (p_after_key, p_after_id))
+  ORDER BY sort_key, m.id
+  LIMIT p_limit;
 $$;
 
-GRANT EXECUTE ON FUNCTION get_random_media(text, int, int) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_random_media(text, text, int, text, bigint) TO anon, authenticated;
+
+CREATE INDEX IF NOT EXISTS gallery_tags_gin ON public."Gallery" USING GIN (tags);
 ```
+
+## 設定
+
+所有 props 都是選填，只有 `supabase` 必填。
+
+| Prop | 預設值 | 說明 |
+|---|---|---|
+| `supabase` | — | supabase-js 的 client 實例 |
+| `rpc` | `'get_random_media'` | 要呼叫的資料庫函式名稱 |
+| `pageSize` | `14` | 每次載入幾張 |
+| `title` | `'My Image Gallery'` | 頁面標題；給 `null` 或空字串就不顯示 |
+| `unoptimizedThumbnails` | `true` | 格線縮圖直接載入原圖，不經過 Next.js 圖片最佳化（省額度）；全螢幕檢視器一律走最佳化 |
+| `entrance` | `{ delay: 0.8, duration: 0.4, ease: 'easeIn' }` | 整頁淡入的 framer-motion transition |
+| `motionProps` | `{}` | 額外展開到最外層 `motion.div` 的 props |
+| `className` | `'min-h-[100vh] p-4 sm:p-6 lg:p-8'` | 最外層容器的 class |
+
+## 從舊版升級
+
+舊版元件自己 import `@/lib/supabaseClient`，而且每一頁都重新隨機排序，捲到底時大約有三分之一的圖從來沒出現過。升級步驟：
+
+1. 用新的 `client.jsx` 覆蓋舊檔，改成 `<GalleryClient supabase={supabase} />` 傳入 client。
+2. 在 SQL Editor 重新執行上面第 6 步的整段 SQL。它會先刪掉舊的三參數函式，再建立新的函式和索引。
+3. 新函式的 `p_seed` 是必填參數，所以舊版元件配新函式（或反過來）會在畫面上顯示「Loading failed」而不是默默吐出錯的順序；兩邊都更新就會恢復。
 
 ## 隱私與安全
 

@@ -7,7 +7,7 @@ A masonry gallery page for your own picture collection, with tag search and a fu
 ![Gallery page with a search box on top and a multi-column masonry grid of illustrations](https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e)
 
 - **Masonry grid**: 2 columns on phones and up to 7 on wide screens, picked from the window width.
-- **Endless scroll**: 14 more images load as you near the bottom, in random order.
+- **Endless scroll**: 14 more images load as you near the bottom, in random order; each image shows up once per visit.
 - **Tag search**: type a tag in the search box; the query runs 500 ms after you stop typing, and tags must be lowercase.
 - **Full-screen viewer**: click an image to see it large, rotate it, jump to its tags, and move with arrow keys or swipes.
 
@@ -25,8 +25,21 @@ The images themselves are not stored in Supabase; the table holds only a link, s
 Needs a Next.js app with Tailwind CSS, and a Supabase project. The images must already be hosted somewhere with a public URL.
 
 1. Install the dependencies: `npm install @supabase/supabase-js framer-motion lucide-react`
-2. Copy `client.jsx` into your app and render it from a page, for example `import GalleryClient from './client'`.
-3. Create `lib/supabaseClient.js` exporting a `supabase` client, since the component imports `@/lib/supabaseClient`. Put `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`.
+2. Copy `client.jsx` into your app and render it from a client component, passing your Supabase client through the `supabase` prop:
+
+```jsx
+'use client';
+import { createClient } from '@supabase/supabase-js';
+import GalleryClient from './client';
+
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+
+export default function GalleryPage() {
+    return <GalleryClient supabase={supabase} />;
+}
+```
+
+3. Put `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local`.
 4. In `next.config.js`, allow the host of your image URLs under `images.remotePatterns`, because the full-screen viewer uses Next.js image optimization.
 5. In Supabase, open **SQL Editor** and create the table. Put the image link in `gcs_url` and lowercase tags in `tags`, for example `{ln,miku}`.
 
@@ -42,13 +55,17 @@ CREATE TABLE public."Gallery" (
 );
 ```
 
-6. Run the second block to create the random-order search function:
+6. Run the second block to create the random-order search function and the tag index:
 
 ```sql
-CREATE OR REPLACE FUNCTION get_random_media(
+DROP FUNCTION IF EXISTS public.get_random_media(text, int, int);
+
+CREATE OR REPLACE FUNCTION public.get_random_media(
+  p_seed text,
   p_search_term text DEFAULT '',
   p_limit int DEFAULT 14,
-  p_offset int DEFAULT 0
+  p_after_key text DEFAULT NULL,
+  p_after_id bigint DEFAULT NULL
 )
 RETURNS TABLE (
   id bigint,
@@ -57,13 +74,14 @@ RETURNS TABLE (
   height int,
   source text,
   gcs_url text,
-  created_at timestamptz
+  created_at timestamptz,
+  sort_key text
 )
-LANGUAGE plpgsql
+LANGUAGE sql
+STABLE
 SECURITY DEFINER
+SET search_path = ''
 AS $$
-BEGIN
-  RETURN QUERY
   SELECT
     m.id,
     COALESCE(m.tags, '{}')::text[],
@@ -71,18 +89,42 @@ BEGIN
     m.height,
     m.source,
     m.gcs_url,
-    m.created_at
-  FROM "Gallery" m
-  WHERE
-    (p_search_term = '' OR m.tags @> ARRAY[p_search_term]::text[])
-  ORDER BY random()
-  LIMIT p_limit
-  OFFSET p_offset;
-END;
+    m.created_at,
+    md5(m.id::text || p_seed) AS sort_key
+  FROM public."Gallery" m
+  WHERE (p_search_term = '' OR m.tags @> ARRAY[p_search_term])
+    AND (p_after_key IS NULL OR (md5(m.id::text || p_seed), m.id) > (p_after_key, p_after_id))
+  ORDER BY sort_key, m.id
+  LIMIT p_limit;
 $$;
 
-GRANT EXECUTE ON FUNCTION get_random_media(text, int, int) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_random_media(text, text, int, text, bigint) TO anon, authenticated;
+
+CREATE INDEX IF NOT EXISTS gallery_tags_gin ON public."Gallery" USING GIN (tags);
 ```
+
+## Configuration
+
+Every prop is optional except `supabase`.
+
+| Prop | Default | Meaning |
+|---|---|---|
+| `supabase` | — | a supabase-js client instance |
+| `rpc` | `'get_random_media'` | name of the database function to call |
+| `pageSize` | `14` | images per request |
+| `title` | `'My Image Gallery'` | page heading; `null` or an empty string hides it |
+| `unoptimizedThumbnails` | `true` | grid thumbnails load the original file, bypassing Next.js image optimization (saves quota); the full-screen viewer is always optimized |
+| `entrance` | `{ delay: 0.8, duration: 0.4, ease: 'easeIn' }` | framer-motion transition for the page fade-in |
+| `motionProps` | `{}` | extra props spread onto the outermost `motion.div` |
+| `className` | `'min-h-[100vh] p-4 sm:p-6 lg:p-8'` | classes of the outermost container |
+
+## Upgrading from the previous version
+
+The old component imported `@/lib/supabaseClient` itself and re-shuffled on every page, so about a third of the images never showed up before "End of gallery". To upgrade:
+
+1. Replace the old file with the new `client.jsx` and render it as `<GalleryClient supabase={supabase} />`.
+2. Re-run the whole SQL block from step 6 in the SQL Editor. It drops the old three-argument function first, then creates the new function and the index.
+3. `p_seed` is a required parameter of the new function, so an old component against the new function (or the reverse) shows "Loading failed" instead of silently serving a wrong order; updating both sides fixes it.
 
 ## Privacy & security
 
