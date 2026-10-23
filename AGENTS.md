@@ -26,6 +26,7 @@ A single drop-in React component for a Next.js app: a masonry gallery with endle
 - Conventional commits. Keep the README's SQL (table + RPC) in sync with what `client.jsx` queries.
 - GitHub Actions: top-level `permissions: contents: read`, raised per job only when needed.
 - GitHub Actions: pin every `uses:` to a 40-character commit SHA with a trailing `# vX.Y.Z` comment.
+- `README.md` and `README.zh-TW.md` mirror each other; update both in the same commit, including the SQL.
 
 ## Where to look
 

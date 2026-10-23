@@ -1,5 +1,7 @@
 # Image Gallery
 
+**English** | [繁體中文](README.zh-TW.md)
+
 A masonry gallery page for your own picture collection, with tag search and a full-screen viewer. Add the component to a Next.js app, put image links and tags in Supabase, and you get an endless wall of pictures in random order.
 
 ![Gallery page with a search box on top and a multi-column masonry grid of illustrations](https://github.com/user-attachments/assets/385e6291-5443-4390-9f8c-676c20c0da7e)
