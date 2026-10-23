@@ -136,6 +136,11 @@ const GalleryClient = ({
 
         const rows = data.map(formatRow);
         setImages((prev) => (afterKey === null ? rows : [...prev, ...rows]));
+        // A replaced list invalidates the viewer's index into it.
+        if (afterKey === null) {
+            setSelectedIndex(null);
+            setRotation(0);
+        }
         if (rows.length > 0) {
             const last = rows[rows.length - 1];
             cursor.current.afterKey = last.sortKey;
